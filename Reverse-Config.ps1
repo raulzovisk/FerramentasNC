@@ -361,10 +361,42 @@ function Invoke-ElevateLocalAccounts {
 }
 
 # =============================================================================
-# MÓDULO 3 — DESABILITAR BITLOCKER
+# MÓDULO 3 — REMOVER PREFIXO "AGR-" E SENHA DO USUÁRIO CRIADO
+# =============================================================================
+function Invoke-ResetUsuarioAGR {
+    Write-Log "MÓDULO 3 — Remover prefixo 'AGR-' e senha do usuário local" -Level SECTION
+
+    $usuariosAGR = Get-LocalUser | Where-Object { $_.Name -like "*AGR-*" }
+
+    if (-not $usuariosAGR) {
+        Write-Log "Nenhum usuário com 'AGR-' no nome foi encontrado." -Level WARN
+        return
+    }
+
+    foreach ($user in $usuariosAGR) {
+        $nomeAntigo = $user.Name
+        $nomeNovo = $nomeAntigo -replace "AGR-", ""
+
+        Invoke-SafeCommand "Renomear '$nomeAntigo' para '$nomeNovo' e remover senha" {
+            if ($nomeNovo -ne $nomeAntigo) {
+                if (Get-LocalUser -Name $nomeNovo -ErrorAction SilentlyContinue) {
+                    throw "Já existe um usuário chamado '$nomeNovo' — renomeação cancelada."
+                }
+                Rename-LocalUser -Name $nomeAntigo -NewName $nomeNovo -ErrorAction Stop
+                Write-Log "  Usuário renomeado: '$nomeAntigo' -> '$nomeNovo'" -Level OK
+            }
+
+            net user "$nomeNovo" "" | Out-Null
+            Write-Log "  Senha removida do usuário '$nomeNovo'." -Level OK
+        }
+    }
+}
+
+# =============================================================================
+# MÓDULO 4 — DESABILITAR BITLOCKER
 # =============================================================================
 function Invoke-DisableBitLocker {
-    Write-Log "MÓDULO 3 — Desabilitar BitLocker" -Level SECTION
+    Write-Log "MÓDULO 4 — Desabilitar BitLocker" -Level SECTION
 
     $drives = Get-BitLockerVolume -ErrorAction SilentlyContinue
     if (-not $drives) {
@@ -394,7 +426,7 @@ function Invoke-DisableBitLocker {
 }
 
 # =============================================================================
-# MÓDULO 4 — DESABILITAR CONTA PC_Admin (SEMPRE POR ÚLTIMO)
+# MÓDULO 5 — DESABILITAR CONTA PC_Admin (SEMPRE POR ÚLTIMO)
 # =============================================================================
 function Invoke-DisablePCAdmin {
     Write-Log "MÓDULO 4 — Desabilitar conta PC_Admin (etapa final)" -Level SECTION
@@ -437,8 +469,9 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 # ── Execução na ordem obrigatória ─────────────────────────────────────────────
 Invoke-RevertGroupPolicies    # Módulo 1 — GPO / gpedit
 Invoke-ElevateLocalAccounts   # Módulo 2 — Contas locais → Administradores
-Invoke-DisableBitLocker       # Módulo 3 — BitLocker
-Invoke-DisablePCAdmin         # Módulo 4 — PC_Admin (SEMPRE POR ÚLTIMO)
+Invoke-ResetUsuarioAGR        # Módulo 3 — Remover prefixo AGR- e senha
+Invoke-DisableBitLocker       # Módulo 4 — BitLocker
+Invoke-DisablePCAdmin         # Módulo 5 — PC_Admin (SEMPRE POR ÚLTIMO)
 
 Write-Log "==========================================================" -Level SECTION
 Write-Log "  REVERSÃO CONCLUÍDA"
