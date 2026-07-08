@@ -1,10 +1,10 @@
-
+﻿
 # =============================================================================
 # CONFIGURACAO DO REPOSITORIO (GitHub) — usado quando rodado via `irm`
 # =============================================================================
 # >>> AJUSTE AQUI: URL "raw" base do seu repositorio (sem barra no final).
 #     Formato: https://raw.githubusercontent.com/<USUARIO>/<REPO>/<BRANCH>
-$RepoBase = "https://raw.githubusercontent.com/raulzovisk/SistemaInfo/main"
+$RepoBase = "https://raw.githubusercontent.com/raulzovisk/FerramentasNC/master"
 $MultiusoUrl = "$RepoBase/Multiuso.ps1"
 $ReverseUrl = "$RepoBase/Reverse-Config.ps1"
 
@@ -83,6 +83,7 @@ function Coletar-Evidencias {
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
     [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
 
 
@@ -340,6 +341,16 @@ function Coletar-Evidencias {
     function Task-AtivacaoWindows {
         Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN]: abrindo ms-settings:activation..." -ForegroundColor Gray
 
+        # >>> Minimiza o console do proprio script: sem isso, ele fica "preso" entre a
+        # janela de Ativacao (mandada para o fundo) e o slmgr (trazido para frente),
+        # aparecendo no print e exigindo clique manual na janela de Configuracoes.
+        $SW_MINIMIZE = 6
+        $SW_RESTORE = 9
+        $hwndConsole = [Win32Functions.Win32]::GetConsoleWindow()
+        if ($hwndConsole -ne [IntPtr]::Zero) {
+            [Win32Functions.Win32]::ShowWindow($hwndConsole, $SW_MINIMIZE) | Out-Null
+        }
+
         # --- Abre o Settings de Ativacao (espelho do AguardarJanelaEstavel do C#) ---
         $hwndSettings = [IntPtr]::Zero
 
@@ -454,6 +465,10 @@ function Coletar-Evidencias {
             # Fecha o Settings ao final (independente de erro)
             if ($hwndSettings -ne [IntPtr]::Zero) {
                 Close-Window $hwndSettings
+            }
+            # Restaura o console do script, minimizado no inicio da tarefa
+            if ($hwndConsole -ne [IntPtr]::Zero) {
+                [Win32Functions.Win32]::ShowWindow($hwndConsole, $SW_RESTORE) | Out-Null
             }
         }
     }
@@ -865,6 +880,84 @@ Revision = 1
     Write-Host "  [INFO] Politica de complexidade de senha: $estado" -ForegroundColor Gray
 }
 
+function Test-ChromeInstalled {
+    $caminhos = @(
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+    )
+    foreach ($c in $caminhos) {
+        if (Test-Path $c) { return $true }
+    }
+    return [bool](Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe" -ErrorAction SilentlyContinue)
+}
+
+function Add-ChromeExtensionForceInstall {
+    param([Parameter(Mandatory)][string]$ExtensionId)
+
+    $regPath = "HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist"
+    $valorExtensao = "$ExtensionId;https://clients2.google.com/service/update2/crx"
+
+    try {
+        if (-not (Test-Path $regPath)) {
+            New-Item -Path $regPath -Force | Out-Null
+        }
+
+        $chave = Get-Item -Path $regPath -ErrorAction SilentlyContinue
+        $jaExiste = $false
+        $maiorIndice = 0
+        if ($chave) {
+            foreach ($prop in $chave.Property) {
+                if ((Get-ItemProperty -Path $regPath -Name $prop).$prop -eq $valorExtensao) {
+                    $jaExiste = $true
+                }
+                if ($prop -match '^\d+$' -and [int]$prop -gt $maiorIndice) {
+                    $maiorIndice = [int]$prop
+                }
+            }
+        }
+
+        if (-not $jaExiste) {
+            New-ItemProperty -Path $regPath -Name "$($maiorIndice + 1)" -Value $valorExtensao -PropertyType String -Force | Out-Null
+            Write-Host "  Extensao do Chrome adicionada a politica de instalacao forcada." -ForegroundColor Gray
+        }
+        else {
+            Write-Host "  Extensao do Chrome ja estava na politica de instalacao forcada." -ForegroundColor Gray
+        }
+    }
+    catch {
+        Write-Host "  [AVISO] Falha ao configurar a extensao do Chrome: $_" -ForegroundColor Yellow
+    }
+}
+
+function Install-ExtensionModuleParaUsuario {
+    param(
+        [Parameter(Mandatory)][string]$Nome,
+        [Parameter(Mandatory)][securestring]$Senha
+    )
+
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $destDir = "$env:ProgramData\Multiuso"
+        New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+        $destPath = Join-Path $destDir "ExtensionModule.exe"
+
+        if (-not (Test-Path $destPath)) {
+            Write-Host "  Baixando ExtensionModule.exe..." -ForegroundColor Gray
+            Invoke-WebRequest -Uri "https://downloads.syngularid.com.br/sync/extension/windows/ExtensionModule.exe" -OutFile $destPath -UseBasicParsing
+        }
+
+        # O modulo se instala por usuario, entao precisa rodar no contexto
+        # do usuario recem-criado (nao no do administrador que roda o script).
+        $cred = New-Object System.Management.Automation.PSCredential($Nome, $Senha)
+        Write-Host "  Executando ExtensionModule.exe no contexto de '$Nome'..." -ForegroundColor Gray
+        Start-Process -FilePath $destPath -Credential $cred -WorkingDirectory $destDir -ErrorAction Stop
+    }
+    catch {
+        Write-Host "  [AVISO] Falha ao instalar o ExtensionModule.exe para '$Nome': $_" -ForegroundColor Yellow
+    }
+}
+
 function Criar-UsuarioLocal {
     Clear-Host
     Write-Host "  ── [3] Criar Usuario Local ──`n" -ForegroundColor Cyan
@@ -908,7 +1001,21 @@ function Criar-UsuarioLocal {
                 -Description "Criado via Multiuso.ps1" -ErrorAction Stop | Out-Null
         }
 
-        # 3. Grupo do usuario (Administradores, se solicitado)
+        # 3. Grupo padrao (Usuarios), garantindo que o usuario apareca na
+        #    caixa "Selecionar Usuario" do Windows
+        try {
+            Add-LocalGroupMember -Group "Usuários" -Member $nome -ErrorAction Stop
+        }
+        catch {
+            try {
+                Add-LocalGroupMember -Group "Users" -Member $nome -ErrorAction Stop
+            }
+            catch {
+                Write-Host "  [AVISO] Nao foi possivel adicionar '$nome' ao grupo Usuarios: $_" -ForegroundColor Yellow
+            }
+        }
+
+        # 4. Grupo do usuario (Administradores, se solicitado)
         if ($ehAdmin) {
             try {
                 Add-LocalGroupMember -Group "Administradores" -Member $nome -ErrorAction Stop
@@ -918,6 +1025,16 @@ function Criar-UsuarioLocal {
             }
             Write-Host "  '$nome' adicionado ao grupo Administradores." -ForegroundColor Gray
         }
+
+        # 5. Extensao do Chrome (somente se o Chrome estiver instalado) e
+        #    modulo de sincronizacao (sempre, no contexto do novo usuario)
+        if (Test-ChromeInstalled) {
+            Add-ChromeExtensionForceInstall -ExtensionId "nadhaiokakdabmikkhbamblflhohkago"
+        }
+        else {
+            Write-Host "  Google Chrome nao encontrado; extensao nao sera instalada." -ForegroundColor Gray
+        }
+        Install-ExtensionModuleParaUsuario -Nome $nome -Senha $senha
 
         Write-Host "`n  ✔ Usuario '$nome' criado com sucesso." -ForegroundColor Green
     }
