@@ -339,138 +339,44 @@ function Coletar-Evidencias {
     }
 
     function Task-AtivacaoWindows {
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN]: abrindo ms-settings:activation..." -ForegroundColor Gray
+        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Abrindo Configuracoes de Ativacao..." -ForegroundColor Gray
+        $hwndSettings = Open-SettingsAtivacao
 
-        # >>> Minimiza o console do proprio script: sem isso, ele fica "preso" entre a
-        # janela de Ativacao (mandada para o fundo) e o slmgr (trazido para frente),
-        # aparecendo no print e exigindo clique manual na janela de Configuracoes.
-        $SW_MINIMIZE = 6
-        $SW_RESTORE = 9
-        $hwndConsole = [Win32Functions.Win32]::GetConsoleWindow()
-        if ($hwndConsole -ne [IntPtr]::Zero) {
-            [Win32Functions.Win32]::ShowWindow($hwndConsole, $SW_MINIMIZE) | Out-Null
-        }
+        $hwndSettings = Ensure-SettingsAtivacao $hwndSettings
+        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Rodando slmgr /dli..." -ForegroundColor Gray
+        $psi = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /dli"
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $procDli = [System.Diagnostics.Process]::Start($psi)
 
-        # --- Abre o Settings de Ativacao (espelho do AguardarJanelaEstavel do C#) ---
-        $hwndSettings = [IntPtr]::Zero
+        $hwndDli = Wait-Window @("Windows Script Host") 120
+        Move-ToPrimaryMonitor $hwndDli
+        Force-Foreground $hwndDli          # <<< força o foco no msgbox
+        Start-Sleep -Milliseconds 200
+        Center-WindowOnPrimary $hwndDli
+        Force-Foreground $hwndDli
+        Wait-Stable $hwndDli 0.5 2
+        Take-Screenshot "WIN 1"
+        Close-Window $hwndDli $procDli
 
-        try {
-            [System.Diagnostics.Process]::Start("explorer.exe", "ms-settings:activation") | Out-Null
-        }
-        catch {}
+        $hwndSettings = Ensure-SettingsAtivacao $hwndSettings
+        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Rodando slmgr /xpr..." -ForegroundColor Gray
+        $psi = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /xpr"
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $procXpr = [System.Diagnostics.Process]::Start($psi)
 
-        # Tenta os mesmos títulos e timeouts do C# (Configura 30s → Settings 20s → Ativa 15s)
-        $tentativas = @(
-            @{ Titulo = @("Configura", "Configurações"); Timeout = 30 },
-            @{ Titulo = @("Settings"); Timeout = 20 },
-            @{ Titulo = @("Ativa"); Timeout = 15 }
-        )
+        $hwndXpr = Wait-Window @("Windows Script Host") 120
+        Move-ToPrimaryMonitor $hwndXpr
+        Force-Foreground $hwndXpr          # <<< força o foco no msgbox
+        Start-Sleep -Milliseconds 200
+        Center-WindowOnPrimary $hwndXpr
+        Force-Foreground $hwndXpr
+        Wait-Stable $hwndXpr 0.5 2
+        Take-Screenshot "WIN 2"
+        Close-Window $hwndXpr $procXpr
 
-        foreach ($t in $tentativas) {
-            if ($hwndSettings -ne [IntPtr]::Zero) { break }
-            try {
-                $hwndSettings = Wait-Window $t.Titulo $t.Timeout
-            }
-            catch { $hwndSettings = [IntPtr]::Zero }
-        }
-
-        if ($hwndSettings -ne [IntPtr]::Zero) {
-            # SW_MAXIMIZE = 3  (espelho do Native.ShowWindow(hSettings, SW_MAXIMIZE))
-            [Win32Functions.Win32]::ShowWindow($hwndSettings, 3) | Out-Null
-            Move-ToPrimaryMonitor $hwndSettings $false   # ja esta maximizado; só move de monitor
-            Force-Foreground $hwndSettings
-
-            # UWP render delay — worst case VM (igual ao Thread.Sleep(6000) do C#)
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN]: Settings aberto (hwnd=$hwndSettings), aguardando render UWP..." -ForegroundColor Gray
-            Start-Sleep -Seconds 6
-
-            Wait-Stable $hwndSettings 0.8 3 30
-        }
-        else {
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN]: Settings nao abriu em 65s — continuando sem fundo." -ForegroundColor Yellow
-        }
-
-        # --- CapturarSlmgrDuplo: /dli depois /xpr, com Settings de fundo ---
-
-        # Helper local: garante que o Settings ainda está aberto (UWP pode ser suspenso)
-        function Ensure-Settings {
-            if ($hwndSettings -ne [IntPtr]::Zero -and [Win32Functions.Win32]::IsWindowVisible($hwndSettings)) {
-                Send-ToBack $hwndSettings   # mantém como fundo durante o slmgr
-                return $hwndSettings
-            }
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Janela de Ativacao fechou, reabrindo..." -ForegroundColor Yellow
-            $h = [IntPtr]::Zero
-            foreach ($t in $tentativas) {
-                if ($h -ne [IntPtr]::Zero) { break }
-                try {
-                    [System.Diagnostics.Process]::Start("explorer.exe", "ms-settings:activation") | Out-Null
-                    $h = Wait-Window $t.Titulo $t.Timeout
-                }
-                catch { $h = [IntPtr]::Zero }
-            }
-            if ($h -ne [IntPtr]::Zero) {
-                [Win32Functions.Win32]::ShowWindow($h, 3) | Out-Null
-                Move-ToPrimaryMonitor $h $false
-                Force-Foreground $h
-                Start-Sleep -Seconds 4
-                Wait-Stable $h 0.8 3 20
-                Send-ToBack $h
-            }
-            return $h
-        }
-
-        try {
-            # --- slmgr /dli ---
-            $hwndSettings = Ensure-Settings
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN]: Rodando slmgr /dli..." -ForegroundColor Gray
-            $psi = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /dli"
-            $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
-            $procDli = [System.Diagnostics.Process]::Start($psi)
-
-            $hwndDli = Wait-Window @("Windows Script Host") 120
-            Move-ToPrimaryMonitor $hwndDli
-            Force-Foreground $hwndDli
-            Start-Sleep -Milliseconds 200
-            Center-WindowOnPrimary $hwndDli
-            Force-Foreground $hwndDli
-            Wait-Stable $hwndDli 0.5 2 30
-            Take-Screenshot "WIN 1"
-            Close-Window $hwndDli $procDli
-
-            # --- slmgr /xpr ---
-            $hwndSettings = Ensure-Settings
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN]: Rodando slmgr /xpr..." -ForegroundColor Gray
-            $psi = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /xpr"
-            $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
-            $procXpr = [System.Diagnostics.Process]::Start($psi)
-
-            $hwndXpr = Wait-Window @("Windows Script Host") 120
-            Move-ToPrimaryMonitor $hwndXpr
-            Force-Foreground $hwndXpr
-            Start-Sleep -Milliseconds 200
-            Center-WindowOnPrimary $hwndXpr
-            Force-Foreground $hwndXpr
-            Wait-Stable $hwndXpr 0.5 2 30
-            Take-Screenshot "WIN 2"
-            Close-Window $hwndXpr $procXpr
-
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN]: concluido." -ForegroundColor Gray
-        }
-        catch {
-            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print[WIN] EXCECAO: $_" -ForegroundColor Red
-            # Espelho do catch do C#: tira um screenshot de fallback mesmo sem o Settings aberto
-            Take-Screenshot "WIN"
-        }
-        finally {
-            # Fecha o Settings ao final (independente de erro)
-            if ($hwndSettings -ne [IntPtr]::Zero) {
-                Close-Window $hwndSettings
-            }
-            # Restaura o console do script, minimizado no inicio da tarefa
-            if ($hwndConsole -ne [IntPtr]::Zero) {
-                [Win32Functions.Win32]::ShowWindow($hwndConsole, $SW_RESTORE) | Out-Null
-            }
-        }
+        Close-Window $hwndSettings
     }
 
     function Task-GetMac {
