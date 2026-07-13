@@ -146,6 +146,34 @@ function Coletar-Evidencias {
         [Win32Functions.Win32]::ShowWindow($hwnd, 9) | Out-Null
         [Win32Functions.Win32]::SetWindowPos($hwnd, [IntPtr]::Zero, $x, $y, 0, 0, $SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE) | Out-Null
     }
+
+    function Place-WindowsSideBySide ($leftHwnd, $rightHwnd) {
+        $leftRect = New-Object Win32Functions.Win32+RECT
+        $rightRect = New-Object Win32Functions.Win32+RECT
+        if (-not [Win32Functions.Win32]::GetWindowRect($leftHwnd, [ref]$leftRect)) { return }
+        if (-not [Win32Functions.Win32]::GetWindowRect($rightHwnd, [ref]$rightRect)) { return }
+
+        $leftWidth = $leftRect.Right - $leftRect.Left
+        $leftHeight = $leftRect.Bottom - $leftRect.Top
+        $rightWidth = $rightRect.Right - $rightRect.Left
+        $rightHeight = $rightRect.Bottom - $rightRect.Top
+        if ($leftWidth -le 0 -or $rightWidth -le 0) { return }
+
+        $area = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $gap = 8
+        $totalWidth = $leftWidth + $gap + $rightWidth
+        $x = $area.X + [Math]::Max(0, [int](($area.Width - $totalWidth) / 2))
+        $y = $area.Y + [Math]::Max(0, [int](($area.Height - [Math]::Max($leftHeight, $rightHeight)) / 2))
+
+        # Configuracoes e um app UWP e pode voltar ao topo enquanto renderiza.
+        # Durante a captura, os dois dialogos precisam ficar acima dela de
+        # forma deterministica, inclusive quando o foco muda.
+        $HWND_TOPMOST = [IntPtr](-1)
+        $SWP_NOSIZE = 0x0001; $SWP_SHOWWINDOW = 0x0040
+        [Win32Functions.Win32]::SetWindowPos($leftHwnd, $HWND_TOPMOST, $x, $y, 0, 0, $SWP_NOSIZE -bor $SWP_SHOWWINDOW) | Out-Null
+        [Win32Functions.Win32]::SetWindowPos($rightHwnd, $HWND_TOPMOST, ($x + $leftWidth + $gap), $y, 0, 0, $SWP_NOSIZE -bor $SWP_SHOWWINDOW) | Out-Null
+    }
+
     function Force-Foreground ($hwnd) {
         if ($hwnd -eq [IntPtr]::Zero) { return }
 
@@ -264,11 +292,83 @@ function Coletar-Evidencias {
         Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Timeout ao aguardar estabilizacao, prosseguindo." -ForegroundColor Yellow
     }
 
+    function Save-PngSafely {
+        param(
+            [Parameter(Mandatory)][System.Drawing.Bitmap]$Bitmap,
+            [Parameter(Mandatory)][string]$BaseName,
+            [switch]$Overwrite
+        )
+
+        # O GDI+ devolve apenas "Erro generico de GDI+" quando tenta salvar
+        # diretamente sobre um PNG aberto pelo Explorer/visualizador. Criar o
+        # arquivo com CreateNew evita sobrescrever evidencias e permite tentar
+        # outro nome caso o anterior esteja bloqueado.
+        [System.IO.Directory]::CreateDirectory($SaveDir) | Out-Null
+
+        if ($Overwrite) {
+            $path = Join-Path $SaveDir "$BaseName.png"
+            $stream = $null
+            try {
+                # FileMode.Create trunca o arquivo anterior e preserva sempre
+                # o mesmo nome, necessario para a evidencia unificada WIN.png.
+                $stream = [System.IO.File]::Open(
+                    $path,
+                    [System.IO.FileMode]::Create,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::Read
+                )
+                $Bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+                return $path
+            }
+            finally {
+                if ($stream) { $stream.Dispose() }
+            }
+        }
+
+        $suffix = 0
+
+        while ($suffix -lt 100) {
+            $fileName = if ($suffix -eq 0) { "$BaseName.png" } else { "$BaseName ($suffix).png" }
+            $path = Join-Path $SaveDir $fileName
+            $stream = $null
+
+            try {
+                $stream = [System.IO.File]::Open(
+                    $path,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::Read
+                )
+                $Bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+                return $path
+            }
+            catch [System.IO.IOException] {
+                # Arquivo ja existe ou esta em uso: preserva-o e tenta o proximo.
+                # Se o stream chegou a ser aberto, o problema foi na codificacao
+                # do bitmap e deve ser exibido ao operador, em vez de mascarado.
+                if ($stream) { throw }
+                $suffix++
+            }
+            finally {
+                if ($stream) { $stream.Dispose() }
+            }
+        }
+
+        throw "Nao foi possivel salvar o print '$BaseName' em '$SaveDir': todos os nomes disponiveis estao em uso."
+    }
+
     function Take-Screenshot ($name) {
-        $path = Join-Path $SaveDir "$name.png"
-        $bmp = Capture-Screen
-        $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-        $bmp.Dispose()
+        $bmp = $null
+        try {
+            $bmp = Capture-Screen
+            # A coleta de ativacao agora gera uma unica evidencia. Repeti-la
+            # deve atualizar WIN.png, enquanto os demais prints sao preservados.
+            $path = Save-PngSafely -Bitmap $bmp -BaseName $name -Overwrite:($name -eq 'WIN')
+        }
+        finally {
+            if ($bmp) { $bmp.Dispose() }
+        }
+
         Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Print salvo: $path" -ForegroundColor Gray
         return $path
     }
@@ -295,6 +395,34 @@ function Coletar-Evidencias {
             Start-Sleep -Milliseconds 500
         }
         throw "Nenhuma janela [$($titles -join '/')] encontrada apos $timeoutSec s."
+    }
+
+    function Wait-ProcessWindow {
+        param(
+            [Parameter(Mandatory)][System.Diagnostics.Process]$Process,
+            [int]$TimeoutSec = 120
+        )
+
+        $start = [DateTime]::UtcNow
+        while (([DateTime]::UtcNow - $start).TotalSeconds -lt $TimeoutSec) {
+            try {
+                $Process.Refresh()
+                if ($Process.HasExited) {
+                    throw "O processo $($Process.Id) foi encerrado antes de abrir a janela."
+                }
+
+                $hwnd = $Process.MainWindowHandle
+                if ($hwnd -ne [IntPtr]::Zero -and [Win32Functions.Win32]::IsWindowVisible($hwnd)) {
+                    Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Janela '$($Process.MainWindowTitle)' encontrada." -ForegroundColor Gray
+                    return $hwnd
+                }
+            }
+            catch {
+                if ($_.Exception.Message -like 'O processo *') { throw }
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        throw "A janela do processo $($Process.Id) nao foi encontrada apos $TimeoutSec s."
     }
 
     function Close-Window ($hwnd, $proc = $null) {
@@ -324,7 +452,9 @@ function Coletar-Evidencias {
         $hwnd = Wait-Window @("Configurações", "Settings")
         Move-ToPrimaryMonitor $hwnd $true
         Wait-Stable $hwnd
-        Send-ToBack $hwnd
+        # Mantem Configuracoes como a ultima janela de fundo. Envia-la para o
+        # fundo absoluto pode fazer o app UWP ser suspenso/fechado pelo Windows.
+        Force-Foreground $hwnd
         return $hwnd
     }
 
@@ -341,42 +471,40 @@ function Coletar-Evidencias {
     function Task-AtivacaoWindows {
         Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Abrindo Configuracoes de Ativacao..." -ForegroundColor Gray
         $hwndSettings = Open-SettingsAtivacao
+        $procDli = $null; $procXpr = $null
+        $hwndDli = [IntPtr]::Zero; $hwndXpr = [IntPtr]::Zero
 
-        $hwndSettings = Ensure-SettingsAtivacao $hwndSettings
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Rodando slmgr /dli..." -ForegroundColor Gray
-        $psi = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /dli"
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $procDli = [System.Diagnostics.Process]::Start($psi)
+        try {
+            $hwndSettings = Ensure-SettingsAtivacao $hwndSettings
+            Force-Foreground $hwndSettings
 
-        $hwndDli = Wait-Window @("Windows Script Host") 120
-        Move-ToPrimaryMonitor $hwndDli
-        Force-Foreground $hwndDli          # <<< força o foco no msgbox
-        Start-Sleep -Milliseconds 200
-        Center-WindowOnPrimary $hwndDli
-        Force-Foreground $hwndDli
-        Wait-Stable $hwndDli 0.5 2
-        Take-Screenshot "WIN 1"
-        Close-Window $hwndDli $procDli
+            # Os dois processos sao iniciados sem esperar o resultado um do
+            # outro. Assim, Configuracoes continua visivel no fundo e os dois
+            # resultados podem compor uma unica evidencia.
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Rodando slmgr /dli e /xpr simultaneamente..." -ForegroundColor Gray
+            $psiDli = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /dli"
+            $psiDli.UseShellExecute = $false
+            $psiDli.CreateNoWindow = $true
+            $psiXpr = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /xpr"
+            $psiXpr.UseShellExecute = $false
+            $psiXpr.CreateNoWindow = $true
+            $procDli = [System.Diagnostics.Process]::Start($psiDli)
+            $procXpr = [System.Diagnostics.Process]::Start($psiXpr)
 
-        $hwndSettings = Ensure-SettingsAtivacao $hwndSettings
-        Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Rodando slmgr /xpr..." -ForegroundColor Gray
-        $psi = New-Object System.Diagnostics.ProcessStartInfo "wscript.exe", "C:\Windows\System32\slmgr.vbs /xpr"
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $procXpr = [System.Diagnostics.Process]::Start($psi)
-
-        $hwndXpr = Wait-Window @("Windows Script Host") 120
-        Move-ToPrimaryMonitor $hwndXpr
-        Force-Foreground $hwndXpr          # <<< força o foco no msgbox
-        Start-Sleep -Milliseconds 200
-        Center-WindowOnPrimary $hwndXpr
-        Force-Foreground $hwndXpr
-        Wait-Stable $hwndXpr 0.5 2
-        Take-Screenshot "WIN 2"
-        Close-Window $hwndXpr $procXpr
-
-        Close-Window $hwndSettings
+            $hwndDli = Wait-ProcessWindow -Process $procDli
+            $hwndXpr = Wait-ProcessWindow -Process $procXpr
+            Move-ToPrimaryMonitor $hwndDli
+            Move-ToPrimaryMonitor $hwndXpr
+            Start-Sleep -Milliseconds 300
+            Place-WindowsSideBySide $hwndDli $hwndXpr
+            Wait-Stable ([IntPtr]::Zero) 0.5 2 30
+            Take-Screenshot "WIN"
+        }
+        finally {
+            Close-Window $hwndDli $procDli
+            Close-Window $hwndXpr $procXpr
+            Close-Window $hwndSettings
+        }
     }
 
     function Task-GetMac {
@@ -671,16 +799,23 @@ function Coletar-Evidencias {
             }
             Write-Host "  Executando: $($nomes -join ', ')`n" -ForegroundColor Yellow
 
+            $falhas = 0
             foreach ($idx in $selecionados) {
                 try {
                     Write-Host "`n  ── [$idx] $($Itens[$idx - 1].Label) ──" -ForegroundColor Cyan
                     & $Itens[$idx - 1].Acao
                 }
                 catch {
+                    $falhas++
                     Write-Host "ERRO na tarefa [$idx]: $_" -ForegroundColor Red
                 }
             }
-            Write-Host "`n  ✔ Concluído! Arquivos salvos em: $SaveDir" -ForegroundColor Green
+            if ($falhas -eq 0) {
+                Write-Host "`n  ✔ Concluído! Arquivos salvos em: $SaveDir" -ForegroundColor Green
+            }
+            else {
+                Write-Host "`n  ⚠ Concluído com $falhas falha(s). Verifique as mensagens acima; os arquivos gerados estão em: $SaveDir" -ForegroundColor Yellow
+            }
             Write-Host "`n  Pressione qualquer tecla para voltar ao menu..."
             [System.Console]::ReadKey($true) | Out-Null
         }
@@ -798,6 +933,45 @@ function Test-ChromeInstalled {
     return [bool](Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe" -ErrorAction SilentlyContinue)
 }
 
+function Install-GoogleChrome {
+    if (Test-ChromeInstalled) { return $true }
+
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Write-Host "  [AVISO] Google Chrome nao encontrado e o winget nao esta disponivel para instala-lo." -ForegroundColor Yellow
+        return $false
+    }
+
+    try {
+        Write-Host "  Google Chrome nao encontrado; instalando pelo winget..." -ForegroundColor Gray
+        $argumentos = "install --id Google.Chrome --exact --silent --disable-interactivity --accept-package-agreements --accept-source-agreements"
+        $processo = Start-Process -FilePath $winget.Source -ArgumentList $argumentos -Wait -PassThru -NoNewWindow -ErrorAction Stop
+
+        if ($processo.ExitCode -ne 0) {
+            Write-Host "  [AVISO] O winget terminou com codigo $($processo.ExitCode)." -ForegroundColor Yellow
+            return $false
+        }
+
+        # O winget ja aguardou o instalador; esta pequena espera adicional
+        # cobre o registro do executavel e impede aplicar a politica cedo demais.
+        $limite = [DateTime]::UtcNow.AddSeconds(30)
+        while ([DateTime]::UtcNow -lt $limite) {
+            if (Test-ChromeInstalled) {
+                Write-Host "  Google Chrome instalado com sucesso." -ForegroundColor Gray
+                return $true
+            }
+            Start-Sleep -Seconds 1
+        }
+
+        Write-Host "  [AVISO] O winget concluiu, mas o Chrome nao foi localizado apos a instalacao." -ForegroundColor Yellow
+        return $false
+    }
+    catch {
+        Write-Host "  [AVISO] Falha ao instalar o Google Chrome pelo winget: $_" -ForegroundColor Yellow
+        return $false
+    }
+}
+
 function Add-ChromeExtensionForceInstall {
     param([Parameter(Mandatory)][string]$ExtensionId)
 
@@ -880,7 +1054,8 @@ function Criar-UsuarioLocal {
         return
     }
 
-    $senha = Read-Host "  Senha para '$nome'" -AsSecureString
+    $senha = ConvertTo-SecureString "AGR12345" -AsPlainText -Force
+    Write-Host "  Senha padrao definida para o novo usuario." -ForegroundColor Gray
     $ehAdmin = (Read-Host "  Tornar administrador? (S/N)").Trim().ToUpper() -eq "S"
 
     # 2. Criacao com tratamento de erros (Try/Catch)
@@ -932,13 +1107,14 @@ function Criar-UsuarioLocal {
             Write-Host "  '$nome' adicionado ao grupo Administradores." -ForegroundColor Gray
         }
 
-        # 5. Extensao do Chrome (somente se o Chrome estiver instalado) e
-        #    modulo de sincronizacao (sempre, no contexto do novo usuario)
-        if (Test-ChromeInstalled) {
+        # 5. Garante o Chrome antes de aplicar a politica da extensao. A
+        #    instalacao e aguardada e validada para nao configurar a extensao
+        #    antes de o navegador existir.
+        if (Install-GoogleChrome) {
             Add-ChromeExtensionForceInstall -ExtensionId "nadhaiokakdabmikkhbamblflhohkago"
         }
         else {
-            Write-Host "  Google Chrome nao encontrado; extensao nao sera instalada." -ForegroundColor Gray
+            Write-Host "  [AVISO] Extensao do Chrome nao foi configurada porque o navegador nao esta disponivel." -ForegroundColor Yellow
         }
         Install-ExtensionModuleParaUsuario -Nome $nome -Senha $senha
 
