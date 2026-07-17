@@ -366,7 +366,7 @@ function Invoke-ElevateLocalAccounts {
 function Invoke-ResetUsuarioAGR {
     Write-Log "MÓDULO 3 — Remover prefixo 'AGR-' e senha do usuário local" -Level SECTION
 
-    $usuariosAGR = Get-LocalUser | Where-Object { $_.Name -like "*AGR-*" }
+    $usuariosAGR = Get-LocalUser | Where-Object { $_.Name -like "*AGR-*" -or $_.FullName -like "*AGR-*" }
 
     if (-not $usuariosAGR) {
         Write-Log "Nenhum usuário com 'AGR-' no nome foi encontrado." -Level WARN
@@ -376,14 +376,21 @@ function Invoke-ResetUsuarioAGR {
     foreach ($user in $usuariosAGR) {
         $nomeAntigo = $user.Name
         $nomeNovo = $nomeAntigo -replace "AGR-", ""
+        $fullNameAntigo = $user.FullName
+        $fullNameNovo = $fullNameAntigo -replace "AGR-", ""
 
-        Invoke-SafeCommand "Renomear '$nomeAntigo' para '$nomeNovo' e remover senha" {
+        Invoke-SafeCommand "Renomear '$nomeAntigo' para '$nomeNovo', ajustar Nome completo e remover senha" {
             if ($nomeNovo -ne $nomeAntigo) {
                 if (Get-LocalUser -Name $nomeNovo -ErrorAction SilentlyContinue) {
                     throw "Já existe um usuário chamado '$nomeNovo' — renomeação cancelada."
                 }
                 Rename-LocalUser -Name $nomeAntigo -NewName $nomeNovo -ErrorAction Stop
                 Write-Log "  Usuário renomeado: '$nomeAntigo' -> '$nomeNovo'" -Level OK
+            }
+
+            if ($fullNameNovo -ne $fullNameAntigo) {
+                Set-LocalUser -Name $nomeNovo -FullName $fullNameNovo -ErrorAction Stop
+                Write-Log "  Nome completo ajustado: '$fullNameAntigo' -> '$fullNameNovo'" -Level OK
             }
 
             net user "$nomeNovo" "" | Out-Null
@@ -423,6 +430,55 @@ function Invoke-DisableBitLocker {
 
     Write-Log "A descriptografia foi iniciada e continuará em segundo plano. O script prosseguirá imediatamente." -Level INFO
     Write-Log "Verifique o progresso manualmente com 'manage-bde -status' se necessário." -Level INFO
+}
+
+# =============================================================================
+# MÓDULO 6 — REMOVER SENHA DE ACESSO NAO SUPERVISIONADO DO ANYDESK
+# =============================================================================
+function Invoke-RemoveAnyDeskPassword {
+    Write-Log "MÓDULO 6 — Remover senha do AnyDesk" -Level SECTION
+
+    $exeCandidates = @(
+        "$env:ProgramFiles(x86)\AnyDesk\AnyDesk.exe",
+        "$env:ProgramFiles\AnyDesk\AnyDesk.exe",
+        "$env:ProgramData\AnyDesk\AnyDesk.exe"
+    )
+    $anydeskExe = $exeCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+
+    if (-not $anydeskExe) {
+        Write-Log "AnyDesk não encontrado nesta máquina — nada a fazer." -Level WARN
+        return
+    }
+
+    Invoke-SafeCommand "Remover senha de acesso não supervisionado do AnyDesk" {
+        & $anydeskExe --remove-password | Out-Null
+        Write-Log "  Comando '--remove-password' executado em: $anydeskExe" -Level OK
+    }
+}
+
+# =============================================================================
+# MÓDULO 7 — ATIVAR CONTA ADMINISTRATOR PADRAO DO WINDOWS
+# =============================================================================
+function Invoke-EnableDefaultAdministrator {
+    Write-Log "MÓDULO 7 — Ativar conta Administrator padrão do Windows" -Level SECTION
+
+    # RID 500 identifica a conta Administrator built-in independente de idioma/renomeação
+    $account = Get-LocalUser | Where-Object { $_.SID -like "*-500" }
+
+    if (-not $account) {
+        Write-Log "Conta Administrator (RID 500) não encontrada." -Level WARN
+        return
+    }
+
+    if ($account.Enabled) {
+        Write-Log "Conta '$($account.Name)' já está habilitada — sem alteração." -Level WARN
+        return
+    }
+
+    Invoke-SafeCommand "Habilitar conta '$($account.Name)' (Administrator padrão)" {
+        Enable-LocalUser -Name $account.Name -ErrorAction Stop
+        Write-Log "  Conta '$($account.Name)' habilitada com sucesso." -Level OK
+    }
 }
 
 # =============================================================================
@@ -471,6 +527,8 @@ Invoke-RevertGroupPolicies    # Módulo 1 — GPO / gpedit
 Invoke-ElevateLocalAccounts   # Módulo 2 — Contas locais → Administradores
 Invoke-ResetUsuarioAGR        # Módulo 3 — Remover prefixo AGR- e senha
 Invoke-DisableBitLocker       # Módulo 4 — BitLocker
+Invoke-RemoveAnyDeskPassword  # Módulo 6 — Senha AnyDesk
+Invoke-EnableDefaultAdministrator  # Módulo 7 — Ativar Administrator padrão
 Invoke-DisablePCAdmin         # Módulo 5 — PC_Admin (SEMPRE POR ÚLTIMO)
 
 Write-Log "==========================================================" -Level SECTION
