@@ -1,36 +1,3 @@
-#Requires -Version 5.1
-
-<#
-.SYNOPSIS
-    Reversao controlada das alteracoes feitas pelo Reverse-Config.ps1.
-
-.DESCRIPTION
-    O modo normal e somente leitura. Para alterar o sistema, use -Apply.
-    A edicao do Windows e validada antes de qualquer alteracao. Somente
-    Windows Pro e Windows Pro N sao aceitos.
-
-    Operacoes de alto impacto exigem parametros adicionais:
-      -AllowSecurityWeakening       politicas fracas, auditoria e tela de bloqueio
-      -AllowAccountChanges           alteracoes de contas locais
-      -AllowBlankPassword            permite remover a senha de uma conta
-      -AllowBitLockerDecryption      inicia a descriptografia de volumes
-      -AllowRemoteAccessChange       altera a configuracao do AnyDesk
-
-    O script nunca remove GroupPolicy\Machine\Registry.pol ou User\Registry.pol.
-    Esses arquivos podem conter configuracoes de seguranca nao relacionadas.
-
-.EXAMPLE
-    .\Reverse-Config.Safe.ps1
-    Simula a execucao e exibe quais modulos seriam considerados.
-
-.EXAMPLE
-    .\Reverse-Config.Safe.ps1 -Apply -Modules TimeService,LocalGpo
-    Cria ponto de restauracao e backups, depois executa somente esses modulos.
-
-.EXAMPLE
-    .\Reverse-Config.Safe.ps1 -RollbackPath .\backups\20260727_120000
-    Restaura os registros, a politica de seguranca e a auditoria daquele backup.
-#>
 
 [CmdletBinding()]
 param(
