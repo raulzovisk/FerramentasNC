@@ -24,6 +24,18 @@ function Get-RemoteScript {
     return $destPath
 }
 
+function Invoke-ScriptFileBypass {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string[]]$Arguments = @()
+    )
+
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Script falhou com codigo $LASTEXITCODE`: $Path"
+    }
+}
+
 # =============================================================================
 # AUTO-ELEVACAO — reinicia o script como Administrador, se necessario
 # =============================================================================
@@ -858,13 +870,13 @@ function Desconfigurar-Maquina {
         if ($reversePathLocal -and (Test-Path $reversePathLocal)) {
             # Rodando em disco: usa a versao segura e aplica a operacao selecionada.
             Write-Host "  Executando arquivo local: $reversePathLocal`n" -ForegroundColor Gray
-            & $reversePathLocal -Apply
+            Invoke-ScriptFileBypass -Path $reversePathLocal -Arguments @('-Apply')
         }
         elseif ($ReverseUrl -and $ReverseUrl -notmatch "SEU-USUARIO") {
             # Rodando via irm: baixa a versao segura para arquivo e executa com -Apply.
             Write-Host "  Baixando e executando: $ReverseUrl`n" -ForegroundColor Gray
             $remoteReversePath = Get-RemoteScript -Url $ReverseUrl -FileName 'Reverse-Config.ps1'
-            & $remoteReversePath -Apply
+            Invoke-ScriptFileBypass -Path $remoteReversePath -Arguments @('-Apply')
         }
         else {
 
