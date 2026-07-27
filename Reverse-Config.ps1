@@ -8,7 +8,6 @@ Uso seguro:
 [CmdletBinding()]
 param(
     [switch]$Apply,
-    [ValidateSet('All', 'SecurityPolicy', 'LocalGpo', 'ScreenSaver', 'TimeService', 'LocalAccounts', 'BitLocker', 'AnyDesk')]
     [string[]]$Modules = @('All'),
     [switch]$AllowSecurityWeakening,
     [switch]$AllowAccountChanges,
@@ -480,6 +479,14 @@ try {
 
     Write-Log 'Inicio do processo Reverse-Config' -Level SECTION
     Write-Log "Maquina: $env:COMPUTERNAME | Usuario: $env:USERDOMAIN\$env:USERNAME | Log: $script:LogFile" -Level INFO
+
+    $validModules = @('All', 'SecurityPolicy', 'LocalGpo', 'ScreenSaver', 'TimeService', 'LocalAccounts', 'BitLocker', 'AnyDesk')
+    $Modules = @($Modules | ForEach-Object { [string]$_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    foreach ($module in $Modules) {
+        if ($module -notin $validModules) {
+            throw "Modulo invalido: $module. Valores aceitos: $($validModules -join ', ')."
+        }
+    }
 
     if (-not $Apply) {
         Write-Log 'Modo seguro: nenhuma alteracao sera feita. Use -Apply para prosseguir.' -Level WARN

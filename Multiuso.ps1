@@ -71,7 +71,8 @@ function Invoke-ScriptFileBypass {
                 if ($item.Value) { $argumentList += "-$($item.Key)" }
             }
             elseif ($item.Value -is [array]) {
-                foreach ($value in $item.Value) { $argumentList += "-$($item.Key)"; $argumentList += $value }
+                $argumentList += "-$($item.Key)"
+                $argumentList += ($item.Value -join ',')
             }
             else {
                 $argumentList += "-$($item.Key)"
