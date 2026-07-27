@@ -925,17 +925,29 @@ function Desconfigurar-Maquina {
             Where-Object { Test-Path -LiteralPath $_ } |
             Where-Object { (Get-Content -LiteralPath $_ -Raw) -match '\[switch\]\$Apply' } |
             Select-Object -First 1
+        $reverseParameters = @{
+            Apply                    = $true
+            Modules                  = @('SecurityPolicy', 'LocalGpo', 'ScreenSaver', 'TimeService', 'LocalAccounts', 'AnyDesk')
+            AllowSecurityWeakening   = $true
+            AllowAccountChanges      = $true
+            AllowBlankPassword       = $true
+            AllowRemoteAccessChange  = $true
+            NormalizeAgrUser         = $true
+            RemoveAgrPassword        = $true
+            EnableBuiltInAdministrator = $true
+            DisablePCAdmin           = $true
+        }
 
         if ($reversePathLocal -and (Test-Path $reversePathLocal)) {
             # Rodando em disco: usa a versao segura e aplica a operacao selecionada.
             Write-Host "  Executando arquivo local: $reversePathLocal`n" -ForegroundColor Gray
-            Invoke-ScriptFileBypass -Path $reversePathLocal -Parameters @{ Apply = $true }
+            Invoke-ScriptFileBypass -Path $reversePathLocal -Parameters $reverseParameters
         }
         elseif ($ReverseUrl -and $ReverseUrl -notmatch "SEU-USUARIO") {
             # Rodando via irm: baixa a versao segura para arquivo e executa com -Apply.
             Write-Host "  Baixando e executando: $ReverseUrl`n" -ForegroundColor Gray
             $remoteReversePath = Get-RemoteScript -Url $ReverseUrl -FileName 'Reverse-Config.ps1'
-            Invoke-ScriptFileBypass -Path $remoteReversePath -Parameters @{ Apply = $true }
+            Invoke-ScriptFileBypass -Path $remoteReversePath -Parameters $reverseParameters
         }
         else {
 

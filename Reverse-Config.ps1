@@ -4,7 +4,6 @@ Uso seguro:
   .\Reverse-Config.ps1 -Apply -Modules TimeService
   .\Reverse-Config.ps1 -Apply -AllowSecurityWeakening -Modules SecurityPolicy,LocalGpo,ScreenSaver
   .\Reverse-Config.ps1 -Apply -AllowAccountChanges -ElevateUser Raul -DisablePCAdmin
-  .\Reverse-Config.ps1 -RollbackPath C:\logs\desconfig\backups\yyyyMMdd_HHmmss
 #>
 [CmdletBinding()]
 param(
@@ -21,8 +20,7 @@ param(
     [switch]$NormalizeAgrUser,
     [switch]$RemoveAgrPassword,
     [switch]$EnableBuiltInAdministrator,
-    [switch]$DisablePCAdmin,
-    [string]$RollbackPath
+    [switch]$DisablePCAdmin
 )
 
 Set-StrictMode -Version Latest
@@ -38,7 +36,6 @@ catch {
 }
 
 $script:LogFile = Join-Path $script:BasePath 'debloat_execution.log'
-$script:BackupPath = $null
 $script:Failures = 0
 $script:ChangedModules = New-Object System.Collections.Generic.List[string]
 $script:SkippedModules = New-Object System.Collections.Generic.List[string]
@@ -113,8 +110,15 @@ function Invoke-Native {
     )
 
     Write-Log "Executando: $Description -> $FilePath $($ArgumentList -join ' ')" -Level INFO
-    $output = & $FilePath @ArgumentList 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $FilePath @ArgumentList 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
     if ($output) {
         Write-Log (($output | Out-String).Trim()) -Level INFO
     }
@@ -166,80 +170,6 @@ function Test-EssentialIntegrity {
     Write-Log "Integridade validada ${Stage}: $($edition.Caption), build $($edition.Build)" -Level OK
 }
 
-function Backup-RegistryKey {
-    param(
-        [Parameter(Mandatory)][string]$RegKey,
-        [Parameter(Mandatory)][string]$Destination
-    )
-
-    $exists = Invoke-Native -FilePath 'reg.exe' -ArgumentList @('query', $RegKey) -Description "Teste de chave $RegKey" -AllowNonZeroExit
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log "Backup ignorado; chave ausente: $RegKey" -Level INFO
-        return
-    }
-
-    Invoke-Native -FilePath 'reg.exe' -ArgumentList @('export', $RegKey, $Destination, '/y') -Description "Backup do registro $RegKey" | Out-Null
-    Write-Log "Backup criado: $Destination" -Level OK
-}
-
-function Save-SafetyBackup {
-    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $script:BackupPath = Join-Path (Join-Path $script:BasePath 'backups') $stamp
-    New-Item -ItemType Directory -Force -Path $script:BackupPath | Out-Null
-
-    $registryKeys = @(
-        'HKLM\SOFTWARE\Policies\Microsoft\Windows\EventLog\Security',
-        'HKLM\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop',
-        'HKCU\Software\Policies\Microsoft\Windows\Control Panel\Desktop',
-        'HKCU\Control Panel\Desktop',
-        'HKLM\SYSTEM\CurrentControlSet\Services\W32Time',
-        'HKLM\SOFTWARE\Policies\Microsoft\W32Time',
-        'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\DateTime\Servers'
-    )
-
-    $index = 0
-    foreach ($key in $registryKeys) {
-        $index++
-        Backup-RegistryKey -RegKey $key -Destination (Join-Path $script:BackupPath ("registry_{0:D2}.reg" -f $index))
-    }
-
-    Invoke-Native -FilePath 'secedit.exe' -ArgumentList @(
-        '/export', '/cfg', (Join-Path $script:BackupPath 'security_policy.inf'),
-        '/areas', 'SECURITYPOLICY', 'USER_RIGHTS'
-    ) -Description 'Export da politica de seguranca local' | Out-Null
-
-    Invoke-Native -FilePath 'auditpol.exe' -ArgumentList @(
-        '/backup', "/file:$(Join-Path $script:BackupPath 'audit_policy.csv')"
-    ) -Description 'Backup da auditoria de seguranca' | Out-Null
-
-    if (Get-Command Get-LocalUser -ErrorAction SilentlyContinue) {
-        Get-LocalUser | Select-Object Name, Enabled, SID, Description, FullName, PasswordRequired |
-            ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $script:BackupPath 'local_users.json') -Encoding UTF8
-
-        Get-LocalGroup | ForEach-Object {
-            $group = $_
-            Get-LocalGroupMember -Group $group.Name -ErrorAction SilentlyContinue |
-                Select-Object @{Name='Group'; Expression={$group.Name}}, Name, SID, ObjectClass
-        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $script:BackupPath 'local_groups.json') -Encoding UTF8
-    }
-
-    if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
-        Get-BitLockerVolume | Select-Object MountPoint, VolumeStatus, EncryptionPercentage, ProtectionStatus, VolumeType,
-            @{Name='KeyProtectorSummary'; Expression={ $_.KeyProtector | Select-Object KeyProtectorType, KeyProtectorId }} |
-            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $script:BackupPath 'bitlocker_state.json') -Encoding UTF8
-    }
-
-    [pscustomobject]@{
-        CreatedAt = (Get-Date).ToString('o')
-        Computer  = $env:COMPUTERNAME
-        User      = "$env:USERDOMAIN\$env:USERNAME"
-        LogFile   = $script:LogFile
-        Warning   = 'Backups HKCU representam somente o usuario que executou o script; nenhum segredo foi exportado.'
-    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:BackupPath 'manifest.json') -Encoding UTF8
-
-    Write-Log "Backups concluidos em: $script:BackupPath" -Level OK
-}
-
 function New-RestorePointBestEffort {
     foreach ($serviceName in @('VSS', 'swprv', 'srservice')) {
         $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -261,8 +191,7 @@ function New-RestorePointBestEffort {
         Write-Log 'Ponto de restauracao criado.' -Level OK
     }
     catch {
-        Write-Log ("Ponto de restauracao nao criado; prosseguindo com backup proprio. " +
-            "Backup: $script:BackupPath. Erro: $($_.Exception.Message)") -Level WARN
+        Write-Log "Ponto de restauracao nao criado; prosseguindo somente com log detalhado. Erro: $($_.Exception.Message)" -Level WARN
     }
 }
 
@@ -544,42 +473,6 @@ function Invoke-AnyDesk {
     }
 }
 
-function Invoke-Rollback {
-    param([Parameter(Mandatory)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        throw "Backup nao encontrado: $Path"
-    }
-
-    Write-Log "Rollback iniciado a partir de $Path" -Level SECTION
-    New-RestorePointBestEffort
-
-    foreach ($file in Get-ChildItem -LiteralPath $Path -Filter 'registry_*.reg' -File) {
-        Invoke-Native -FilePath 'reg.exe' -ArgumentList @('import', $file.FullName) -Description "Importacao de $($file.Name)" | Out-Null
-    }
-
-    $security = Join-Path $Path 'security_policy.inf'
-    if (Test-Path -LiteralPath $security) {
-        $db = Join-Path $env:TEMP ('rollback_{0}.sdb' -f [guid]::NewGuid())
-        try {
-            Invoke-Native -FilePath 'secedit.exe' -ArgumentList @('/configure', '/db', $db, '/cfg', $security, '/areas', 'SECURITYPOLICY', 'USER_RIGHTS') -Description 'Rollback da politica de seguranca' | Out-Null
-        }
-        finally {
-            Remove-Item -LiteralPath $db -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    $audit = Join-Path $Path 'audit_policy.csv'
-    if (Test-Path -LiteralPath $audit) {
-        Invoke-Native -FilePath 'auditpol.exe' -ArgumentList @('/restore', "/file:$audit") -Description 'Rollback da auditoria' | Out-Null
-    }
-
-    Invoke-Native -FilePath 'gpupdate.exe' -ArgumentList @('/force', '/wait:0') -Description 'Atualizacao apos rollback' -AllowNonZeroExit | Out-Null
-    Test-EssentialIntegrity -Stage 'rollback'
-    Write-Log 'Rollback de registro, politica local e auditoria concluido.' -Level OK
-    Write-Log 'Rollback manual ainda necessario para contas locais, BitLocker e AnyDesk.' -Level WARN
-}
-
 try {
     New-Item -ItemType File -Path $script:LogFile -Force | Out-Null
     $edition = Test-WindowsProOnly
@@ -588,12 +481,6 @@ try {
     Write-Log 'Inicio do processo Reverse-Config' -Level SECTION
     Write-Log "Maquina: $env:COMPUTERNAME | Usuario: $env:USERDOMAIN\$env:USERNAME | Log: $script:LogFile" -Level INFO
 
-    if ($RollbackPath) {
-        if ($Apply) { throw 'Use -RollbackPath sem -Apply; rollback ja altera o sistema.' }
-        Invoke-Rollback -Path (Resolve-Path -LiteralPath $RollbackPath).Path
-        return
-    }
-
     if (-not $Apply) {
         Write-Log 'Modo seguro: nenhuma alteracao sera feita. Use -Apply para prosseguir.' -Level WARN
         Write-Log "Modulos selecionados: $($Modules -join ', ')" -Level INFO
@@ -601,7 +488,6 @@ try {
     }
 
     Test-EssentialIntegrity -Stage 'pre-flight'
-    Save-SafetyBackup
     New-RestorePointBestEffort
 
     $selected = if ($Modules -contains 'All') {
@@ -628,7 +514,7 @@ try {
     Write-Log "Modulos ignorados: $($script:SkippedModules -join ', ')" -Level INFO
 
     if ($script:Failures -gt 0) {
-        throw "Execucao terminou com $($script:Failures) falha(s). Consulte $script:LogFile e backup $script:BackupPath."
+        throw "Execucao terminou com $($script:Failures) falha(s). Consulte $script:LogFile."
     }
 }
 catch {
