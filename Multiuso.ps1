@@ -928,7 +928,6 @@ function Desconfigurar-Maquina {
             Select-Object -First 1
         $reverseParameters = @{
             Apply                    = $true
-            Modules                  = @('SecurityPolicy', 'LocalGpo', 'ScreenSaver', 'TimeService', 'LocalAccounts', 'AnyDesk')
             AllowSecurityWeakening   = $true
             AllowAccountChanges      = $true
             AllowBlankPassword       = $true
