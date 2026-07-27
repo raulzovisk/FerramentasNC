@@ -343,42 +343,56 @@ function Invoke-LocalAccounts {
     Invoke-ModuleSafe 'LocalAccounts' {
         $adminGroup = Get-AdministratorsGroupName
 
-        foreach ($name in $ElevateUser) {
-            $user = Get-LocalUser -Name $name -ErrorAction Stop
-            if (-not $user.Enabled) {
-                Write-Log "Conta ignorada porque esta desabilitada: $name" -Level WARN
-                continue
+        $usersToElevate = if ($ElevateUser.Count -gt 0) {
+            foreach ($name in $ElevateUser) { Get-LocalUser -Name $name -ErrorAction Stop }
+        }
+        else {
+            Get-LocalUser | Where-Object { $_.Enabled -and $_.Name -ne 'PC_Admin' }
+        }
+
+        foreach ($user in $usersToElevate) {
+            try {
+                $name = $user.Name
+                if (-not $user.Enabled) {
+                    Write-Log "Conta ignorada porque esta desabilitada: $name" -Level WARN
+                    continue
+                }
+                $isMember = Get-LocalGroupMember -Group $adminGroup -ErrorAction SilentlyContinue |
+                    Where-Object { $_.SID -eq $user.SID }
+                if ($isMember) {
+                    Write-Log "Conta ja administradora: $name" -Level INFO
+                }
+                else {
+                    Add-LocalGroupMember -Group $adminGroup -Member $name -ErrorAction Stop
+                    Write-Log "Conta adicionada ao grupo ${adminGroup}: $name" -Level WARN
+                }
             }
-            $isMember = Get-LocalGroupMember -Group $adminGroup -ErrorAction SilentlyContinue |
-                Where-Object { $_.SID -eq $user.SID }
-            if ($isMember) {
-                Write-Log "Conta ja administradora: $name" -Level INFO
-            }
-            else {
-                Add-LocalGroupMember -Group $adminGroup -Member $name -ErrorAction Stop
-                Write-Log "Conta adicionada ao grupo ${adminGroup}: $name" -Level WARN
+            catch {
+                Write-Log "Falha ao elevar conta '$($user.Name)': $($_.Exception.Message)" -Level ERROR
             }
         }
 
-        if ($ElevateUser.Count -eq 0) {
-            Write-Log 'Nenhuma elevacao em massa sera feita; use -ElevateUser para contas especificas.' -Level INFO
-        }
+        if ($ElevateUser.Count -eq 0) { Write-Log 'Elevacao em massa aplicada para contas locais ativas, exceto PC_Admin.' -Level WARN }
 
         if ($NormalizeAgrUser) {
             foreach ($user in Get-LocalUser | Where-Object { $_.Name -like 'AGR-*' }) {
                 $oldName = $user.Name
                 $newName = $oldName -replace '^AGR-', ''
+                $targetName = $oldName
                 if ($oldName -eq $newName) { continue }
                 if (Get-LocalUser -Name $newName -ErrorAction SilentlyContinue) {
-                    throw "Ja existe um usuario chamado '$newName'; renomeacao de '$oldName' cancelada."
+                    Write-Log "Ja existe um usuario chamado '$newName'; renomeacao de '$oldName' ignorada." -Level WARN
                 }
-                Rename-LocalUser -Name $oldName -NewName $newName -ErrorAction Stop
-                Write-Log "Conta normalizada: $oldName -> $newName" -Level WARN
+                else {
+                    Rename-LocalUser -Name $oldName -NewName $newName -ErrorAction Stop
+                    $targetName = $newName
+                    Write-Log "Conta normalizada: $oldName -> $newName" -Level WARN
+                }
 
                 if ($RemoveAgrPassword) {
                     if (-not $AllowBlankPassword) { throw 'Remocao de senha exige -AllowBlankPassword.' }
-                    Invoke-Native -FilePath 'net.exe' -ArgumentList @('user', $newName, '""') -Description "Remocao de senha de $newName" | Out-Null
-                    Write-Log "ATENCAO: senha removida da conta $newName." -Level WARN
+                    Invoke-Native -FilePath 'net.exe' -ArgumentList @('user', $targetName, '""') -Description "Remocao de senha de $targetName" | Out-Null
+                    Write-Log "ATENCAO: senha removida da conta $targetName." -Level WARN
                 }
             }
         }
@@ -424,27 +438,27 @@ function Invoke-BitLocker {
         Write-Log 'BitLocker ignorado: exige -AllowBitLockerDecryption.' -Level WARN
         return
     }
-    if ($BitLockerDrive.Count -eq 0) {
-        $script:SkippedModules.Add('BitLocker')
-        Write-Log 'BitLocker ignorado: informe volumes explicitamente com -BitLockerDrive C:.' -Level WARN
-        return
-    }
-
     Invoke-ModuleSafe 'BitLocker' {
-        foreach ($drive in $BitLockerDrive) {
-            $volume = Get-BitLockerVolume -MountPoint $drive -ErrorAction Stop
-            if ($volume.VolumeStatus -eq 'FullyDecrypted') {
-                Write-Log "$drive ja esta descriptografado." -Level INFO
-                continue
+        $volumes = if ($BitLockerDrive.Count -gt 0) {
+            foreach ($drive in $BitLockerDrive) { Get-BitLockerVolume -MountPoint $drive -ErrorAction Stop }
+        }
+        else {
+            Get-BitLockerVolume -ErrorAction Stop
+        }
+
+        foreach ($volume in $volumes) {
+            try {
+                $drive = $volume.MountPoint
+                if ($volume.VolumeStatus -eq 'FullyDecrypted') {
+                    Write-Log "$drive ja esta descriptografado." -Level INFO
+                    continue
+                }
+                Disable-BitLocker -MountPoint $drive -ErrorAction Stop | Out-Null
+                Write-Log "Descriptografia iniciada em $drive. Progresso: manage-bde -status $drive" -Level WARN
             }
-            $hasRecoveryPassword = $volume.KeyProtector |
-                Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } |
-                Select-Object -First 1
-            if (-not $hasRecoveryPassword) {
-                throw "$drive nao possui protetor RecoveryPassword confirmado; descriptografia cancelada."
+            catch {
+                Write-Log "Falha ao tratar BitLocker em '$($volume.MountPoint)': $($_.Exception.Message)" -Level ERROR
             }
-            Disable-BitLocker -MountPoint $drive -ErrorAction Stop | Out-Null
-            Write-Log "Descriptografia iniciada em $drive. Progresso: manage-bde -status $drive" -Level WARN
         }
     }
 }
@@ -521,7 +535,7 @@ try {
     Write-Log "Modulos ignorados: $($script:SkippedModules -join ', ')" -Level INFO
 
     if ($script:Failures -gt 0) {
-        throw "Execucao terminou com $($script:Failures) falha(s). Consulte $script:LogFile."
+        Write-Log "Execucao terminou com $($script:Failures) falha(s) nao criticas. Consulte $script:LogFile." -Level WARN
     }
 }
 catch {

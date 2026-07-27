@@ -931,6 +931,7 @@ function Desconfigurar-Maquina {
             AllowSecurityWeakening   = $true
             AllowAccountChanges      = $true
             AllowBlankPassword       = $true
+            AllowBitLockerDecryption = $true
             AllowRemoteAccessChange  = $true
             NormalizeAgrUser         = $true
             RemoveAgrPassword        = $true
