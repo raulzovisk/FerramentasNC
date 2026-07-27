@@ -408,27 +408,30 @@ function Invoke-LocalAccounts {
                 Write-Log "Conta interna ja habilitada: $($builtin.Name)" -Level INFO
             }
         }
+    }
+}
 
-        if ($DisablePCAdmin) {
-            $pcAdmin = Get-LocalUser -Name 'PC_Admin' -ErrorAction SilentlyContinue
-            if ($pcAdmin -and $pcAdmin.Enabled) {
-                $enabledAdmin = Get-LocalGroupMember -Group $adminGroup -ErrorAction SilentlyContinue |
-                    Where-Object {
-                        $localName = $_.Name.Split('\')[-1]
-                        $localUser = Get-LocalUser -Name $localName -ErrorAction SilentlyContinue
-                        $_.ObjectClass -eq 'User' -and $_.Name -notlike '*\PC_Admin' -and $localUser -and $localUser.Enabled
-                    } |
-                    Select-Object -First 1
-                if (-not $enabledAdmin) {
-                    throw 'PC_Admin nao sera desabilitado: nenhuma outra conta local habilitada foi confirmada como administradora.'
-                }
-                Disable-LocalUser -Name 'PC_Admin' -ErrorAction Stop
-                Write-Log 'PC_Admin desabilitado.' -Level WARN
-            }
-            else {
-                Write-Log 'PC_Admin ausente ou ja desabilitado.' -Level INFO
-            }
+function Invoke-DisablePCAdminFinal {
+    Invoke-ModuleSafe 'DisablePCAdminFinal' {
+        $pcAdmin = Get-LocalUser -Name 'PC_Admin' -ErrorAction SilentlyContinue
+        if (-not $pcAdmin -or -not $pcAdmin.Enabled) {
+            Write-Log 'PC_Admin ausente ou ja desabilitado.' -Level INFO
+            return
         }
+
+        $adminGroup = Get-AdministratorsGroupName
+        $adminSids = @(Get-LocalGroupMember -Group $adminGroup -ErrorAction SilentlyContinue | ForEach-Object { $_.SID.Value })
+        $otherEnabledAdmin = Get-LocalUser |
+            Where-Object { $_.Enabled -and $_.Name -ne 'PC_Admin' -and ($adminSids -contains $_.SID.Value) } |
+            Select-Object -First 1
+
+        if (-not $otherEnabledAdmin) {
+            Write-Log 'PC_Admin mantido ativo: nenhuma outra conta local habilitada foi confirmada como administradora.' -Level WARN
+            return
+        }
+
+        Disable-LocalUser -Name 'PC_Admin' -ErrorAction Stop
+        Write-Log "PC_Admin desabilitado. Administrador remanescente confirmado: $($otherEnabledAdmin.Name)." -Level WARN
     }
 }
 
@@ -528,6 +531,10 @@ try {
             'BitLocker'      { Invoke-BitLocker }
             'AnyDesk'        { Invoke-AnyDesk }
         }
+    }
+
+    if ($DisablePCAdmin) {
+        Invoke-DisablePCAdminFinal
     }
 
     Test-EssentialIntegrity -Stage 'post-change'
