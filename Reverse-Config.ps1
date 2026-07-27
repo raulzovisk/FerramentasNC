@@ -226,13 +226,34 @@ function New-RestorePointRequired {
         return
     }
     try {
+        foreach ($serviceName in @('VSS', 'swprv', 'srservice')) {
+            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+            if ($service) {
+                try {
+                    Set-Service -Name $serviceName -StartupType Manual -ErrorAction Stop
+                    Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+                    Write-Log "Servico preparado para ponto de restauracao: $serviceName" -Level INFO
+                }
+                catch {
+                    Write-Log "Nao foi possivel preparar o servico ${serviceName}: $($_.Exception.Message)" -Level WARN
+                }
+            }
+        }
+        try {
+            Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop
+            Write-Log "Protecao do Sistema habilitada em $env:SystemDrive\" -Level INFO
+        }
+        catch {
+            Write-Log "Nao foi possivel habilitar a Protecao do Sistema: $($_.Exception.Message)" -Level WARN
+        }
         Checkpoint-Computer -Description 'Reverse-Config.Safe pre-change' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
         Write-Log 'Ponto de restauracao criado.' -Level OK
     }
     catch {
-        throw ("Nao foi possivel criar o ponto de restauracao. Nenhuma alteracao sera aplicada. " +
+        $backupMessage = if ($script:BackupPath) { "Backup proprio: $script:BackupPath. " } else { '' }
+        Write-Log ("Ponto de restauracao nao criado; prosseguindo. " + $backupMessage +
             "O Windows pode limitar a um ponto a cada 24 horas ou estar com a Protecao do Sistema desativada. " +
-            $_.Exception.Message)
+            $_.Exception.Message) -Level WARN
     }
 }
 
@@ -578,8 +599,8 @@ try {
     }
 
     Test-EssentialIntegrity -Stage 'pre-flight'
-    New-RestorePointRequired
     Save-SafetyBackup
+    New-RestorePointRequired
 
     $selected = if ($Modules -contains 'All') {
         @('SecurityPolicy', 'LocalGpo', 'ScreenSaver', 'TimeService', 'LocalAccounts', 'BitLocker', 'AnyDesk')
