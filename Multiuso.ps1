@@ -6,7 +6,7 @@
 #     Formato: https://raw.githubusercontent.com/<USUARIO>/<REPO>/<BRANCH>
 $RepoBase = "https://raw.githubusercontent.com/raulzovisk/FerramentasNC/master"
 $MultiusoUrl = "$RepoBase/Multiuso.ps1"
-$ReverseUrl = "$RepoBase/Reverse-Config.ps1"
+$ReverseUrl = "$RepoBase/reverse_config/Reverse-Config.Safe.ps1"
 
 # Baixa um script para um arquivo LOCAL antes de executa-lo (nunca via
 # Invoke-Expression em texto cru). Isso evita o mojibake de encoding que
@@ -845,22 +845,26 @@ function Desconfigurar-Maquina {
         # baixa o Reverse-Config.ps1 do repositorio e executa em memoria.
         # Basta manter os dois arquivos no MESMO repo e ajustar $RepoBase no topo.
         # ---------------------------------------------------------------------
-        $reversePathLocal = if ($PSScriptRoot) { Join-Path $PSScriptRoot "Reverse-Config.ps1" } else { $null }
+        $reverseCandidates = @()
+        if ($PSScriptRoot) {
+            $reverseCandidates += Join-Path $PSScriptRoot "reverse_config\Reverse-Config.Safe.ps1"
+            $reverseCandidates += Join-Path $PSScriptRoot "Reverse-Config.ps1"
+        }
+        $reversePathLocal = $reverseCandidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Where-Object { (Get-Content -LiteralPath $_ -Raw) -match '\[switch\]\$Apply' } |
+            Select-Object -First 1
 
         if ($reversePathLocal -and (Test-Path $reversePathLocal)) {
-            # Rodando em disco: usa o arquivo ao lado (dot-source para expor as funcoes)
+            # Rodando em disco: usa a versao segura e aplica a operacao selecionada.
             Write-Host "  Executando arquivo local: $reversePathLocal`n" -ForegroundColor Gray
-            & $reversePathLocal
+            & $reversePathLocal -Apply
         }
         elseif ($ReverseUrl -and $ReverseUrl -notmatch "SEU-USUARIO") {
-            # Rodando via irm: baixa o segundo script do GitHub e executa
+            # Rodando via irm: baixa a versao segura para arquivo e executa com -Apply.
             Write-Host "  Baixando e executando: $ReverseUrl`n" -ForegroundColor Gray
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $reverseCode = Invoke-RestMethod -Uri $ReverseUrl -UseBasicParsing
-            # Executa o conteudo baixado (o #Requires do topo e ignorado via iex;
-            # a elevacao ja foi garantida no inicio do Multiuso.ps1).
-            # O Trim([char]0xFEFF) previne o erro de BOM invisível que causa falha no Invoke-Expression
-            Invoke-Expression $reverseCode.Trim([char]0xFEFF)
+            $remoteReversePath = Get-RemoteScript -Url $ReverseUrl -FileName 'Reverse-Config.Safe.ps1'
+            & $remoteReversePath -Apply
         }
         else {
 
