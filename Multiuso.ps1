@@ -6,7 +6,7 @@
 #     Formato: https://raw.githubusercontent.com/<USUARIO>/<REPO>/<BRANCH>
 $RepoBase = "https://raw.githubusercontent.com/raulzovisk/FerramentasNC/master"
 $MultiusoUrl = "$RepoBase/Multiuso.ps1"
-$ReverseUrl = "$RepoBase/reverse_config/Reverse-Config.Safe.ps1"
+$ReverseUrl = "$RepoBase/Reverse-Config.ps1"
 
 # Baixa um script para um arquivo LOCAL antes de executa-lo (nunca via
 # Invoke-Expression em texto cru). Isso evita o mojibake de encoding que
@@ -847,7 +847,7 @@ function Desconfigurar-Maquina {
         # ---------------------------------------------------------------------
         $reverseCandidates = @()
         if ($PSScriptRoot) {
-            $reverseCandidates += Join-Path $PSScriptRoot "reverse_config\Reverse-Config.Safe.ps1"
+            $reverseCandidates += Join-Path $PSScriptRoot "reverse_config\Reverse-Config.ps1"
             $reverseCandidates += Join-Path $PSScriptRoot "Reverse-Config.ps1"
         }
         $reversePathLocal = $reverseCandidates |
@@ -863,7 +863,7 @@ function Desconfigurar-Maquina {
         elseif ($ReverseUrl -and $ReverseUrl -notmatch "SEU-USUARIO") {
             # Rodando via irm: baixa a versao segura para arquivo e executa com -Apply.
             Write-Host "  Baixando e executando: $ReverseUrl`n" -ForegroundColor Gray
-            $remoteReversePath = Get-RemoteScript -Url $ReverseUrl -FileName 'Reverse-Config.Safe.ps1'
+            $remoteReversePath = Get-RemoteScript -Url $ReverseUrl -FileName 'Reverse-Config.ps1'
             & $remoteReversePath -Apply
         }
         else {
