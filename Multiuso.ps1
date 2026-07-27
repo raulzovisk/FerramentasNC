@@ -30,9 +30,20 @@ function Invoke-ScriptFileBypass {
         [string[]]$Arguments = @()
     )
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Script falhou com codigo $LASTEXITCODE`: $Path"
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+    $code = Get-Content -LiteralPath $resolvedPath -Raw
+    if ($code -notmatch '\[switch\]\$Apply') {
+        throw "Script remoto/local nao parece ser a versao segura esperada: $resolvedPath"
+    }
+
+    $previousLocation = Get-Location
+    try {
+        Set-Location -LiteralPath (Split-Path -LiteralPath $resolvedPath -Parent)
+        $scriptBlock = [scriptblock]::Create($code)
+        & $scriptBlock @Arguments
+    }
+    finally {
+        Set-Location -LiteralPath $previousLocation
     }
 }
 

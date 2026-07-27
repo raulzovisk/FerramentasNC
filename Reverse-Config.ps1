@@ -84,7 +84,7 @@ if ($script:Edition.EditionId -notin @('Professional', 'ProfessionalN')) {
 }
 
 $script:BasePath = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
-$script:ScriptPath = $PSCommandPath
+$script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $null }
 $script:LogFile = Join-Path $script:BasePath 'debloat_execution.log'
 
 function Write-Log {
@@ -314,12 +314,19 @@ function Save-SafetyBackup {
             ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $script:BackupPath 'bitlocker_state.json') -Encoding UTF8
     }
 
+    $scriptHash = if ($script:ScriptPath -and (Test-Path -LiteralPath $script:ScriptPath -PathType Leaf)) {
+        (Get-FileHash -LiteralPath $script:ScriptPath -Algorithm SHA256).Hash
+    }
+    else {
+        'unavailable-scriptblock-execution'
+    }
+
     [pscustomobject]@{
         CreatedAt = (Get-Date).ToString('o')
         Computer  = $env:COMPUTERNAME
         User      = "$env:USERDOMAIN\$env:USERNAME"
         Edition   = $script:Edition
-        ScriptSha256 = (Get-FileHash -LiteralPath $script:ScriptPath -Algorithm SHA256).Hash
+        ScriptSha256 = $scriptHash
         Warning   = 'Backups HKCU representam somente o usuario que executou este script; nenhum segredo foi exportado.'
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $script:BackupPath 'manifest.json') -Encoding UTF8
 
