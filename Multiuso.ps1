@@ -27,7 +27,7 @@ function Get-RemoteScript {
 function Invoke-ScriptFileBypass {
     param(
         [Parameter(Mandatory)][string]$Path,
-        [string[]]$Arguments = @()
+        [hashtable]$Parameters = @{}
     )
 
     $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
@@ -40,7 +40,7 @@ function Invoke-ScriptFileBypass {
     try {
         Set-Location -LiteralPath (Split-Path -LiteralPath $resolvedPath -Parent)
         $scriptBlock = [scriptblock]::Create($code)
-        & $scriptBlock @Arguments
+        & $scriptBlock @Parameters
     }
     finally {
         Set-Location -LiteralPath $previousLocation
@@ -881,13 +881,13 @@ function Desconfigurar-Maquina {
         if ($reversePathLocal -and (Test-Path $reversePathLocal)) {
             # Rodando em disco: usa a versao segura e aplica a operacao selecionada.
             Write-Host "  Executando arquivo local: $reversePathLocal`n" -ForegroundColor Gray
-            Invoke-ScriptFileBypass -Path $reversePathLocal -Arguments @('-Apply')
+            Invoke-ScriptFileBypass -Path $reversePathLocal -Parameters @{ Apply = $true }
         }
         elseif ($ReverseUrl -and $ReverseUrl -notmatch "SEU-USUARIO") {
             # Rodando via irm: baixa a versao segura para arquivo e executa com -Apply.
             Write-Host "  Baixando e executando: $ReverseUrl`n" -ForegroundColor Gray
             $remoteReversePath = Get-RemoteScript -Url $ReverseUrl -FileName 'Reverse-Config.ps1'
-            Invoke-ScriptFileBypass -Path $remoteReversePath -Arguments @('-Apply')
+            Invoke-ScriptFileBypass -Path $remoteReversePath -Parameters @{ Apply = $true }
         }
         else {
 
