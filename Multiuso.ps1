@@ -38,7 +38,7 @@ function Invoke-ScriptFileBypass {
 
     $previousLocation = Get-Location
     try {
-        Set-Location -LiteralPath (Split-Path -LiteralPath $resolvedPath -Parent)
+        Set-Location -LiteralPath ([System.IO.Path]::GetDirectoryName($resolvedPath))
         $scriptBlock = [scriptblock]::Create($code)
         & $scriptBlock @Parameters
     }
