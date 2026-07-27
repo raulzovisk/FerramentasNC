@@ -8,6 +8,30 @@ $RepoBase = "https://raw.githubusercontent.com/raulzovisk/FerramentasNC/master"
 $MultiusoUrl = "$RepoBase/Multiuso.ps1"
 $ReverseUrl = "$RepoBase/Reverse-Config.ps1"
 
+$script:DesconfigLogDir = 'C:\logs\desconfig'
+try {
+    New-Item -ItemType Directory -Force -Path $script:DesconfigLogDir -ErrorAction Stop | Out-Null
+}
+catch {
+    $script:DesconfigLogDir = Join-Path $env:TEMP 'desconfig'
+    New-Item -ItemType Directory -Force -Path $script:DesconfigLogDir | Out-Null
+}
+$script:DesconfigLogStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$script:DesconfigLogFile = Join-Path $script:DesconfigLogDir ("multiuso_{0}_{1}.log" -f $env:COMPUTERNAME, $script:DesconfigLogStamp)
+$script:DesconfigTranscriptFile = Join-Path $script:DesconfigLogDir ("transcript_{0}_{1}.txt" -f $env:COMPUTERNAME, $script:DesconfigLogStamp)
+
+function Write-DesconfigLog {
+    param([Parameter(Mandatory)][string]$Message)
+    try {
+        Add-Content -LiteralPath $script:DesconfigLogFile -Encoding UTF8 -Value ("{0} {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message)
+    }
+    catch {}
+}
+
+Write-DesconfigLog "Inicio Multiuso. Usuario=$env:USERDOMAIN\$env:USERNAME PS=$($PSVersionTable.PSVersion)"
+try { Start-Transcript -Path $script:DesconfigTranscriptFile -Append | Out-Null } catch { Write-DesconfigLog "Start-Transcript falhou: $($_.Exception.Message)" }
+Write-Host "Log detalhado: $script:DesconfigLogDir" -ForegroundColor DarkGray
+
 # Baixa um script para um arquivo LOCAL antes de executa-lo (nunca via
 # Invoke-Expression em texto cru). Isso evita o mojibake de encoding que
 # o `irm URL | iex` pode causar em caracteres acentuados/BOM no PowerShell
@@ -20,7 +44,9 @@ function Get-RemoteScript {
     New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     $destPath = Join-Path $destDir $FileName
 
+    Write-DesconfigLog "Baixando script: $Url -> $destPath"
     Invoke-WebRequest -Uri $Url -OutFile $destPath -UseBasicParsing
+    Write-DesconfigLog "Download concluido: $destPath"
     return $destPath
 }
 
@@ -39,8 +65,26 @@ function Invoke-ScriptFileBypass {
     $previousLocation = Get-Location
     try {
         Set-Location -LiteralPath ([System.IO.Path]::GetDirectoryName($resolvedPath))
-        $scriptBlock = [scriptblock]::Create($code)
-        & $scriptBlock @Parameters
+        $argumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $resolvedPath)
+        foreach ($item in $Parameters.GetEnumerator()) {
+            if ($item.Value -is [bool]) {
+                if ($item.Value) { $argumentList += "-$($item.Key)" }
+            }
+            elseif ($item.Value -is [array]) {
+                foreach ($value in $item.Value) { $argumentList += "-$($item.Key)"; $argumentList += $value }
+            }
+            else {
+                $argumentList += "-$($item.Key)"
+                $argumentList += $item.Value
+            }
+        }
+
+        Write-DesconfigLog "Executando powershell.exe $($argumentList -join ' ')"
+        & powershell.exe @argumentList *>&1 | Tee-Object -FilePath $script:DesconfigLogFile -Append
+        Write-DesconfigLog "Reverse-Config exit code: $LASTEXITCODE"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Reverse-Config.ps1 falhou com codigo $LASTEXITCODE. Log: $script:DesconfigLogFile"
+        }
     }
     finally {
         Set-Location -LiteralPath $previousLocation
@@ -52,6 +96,7 @@ function Invoke-ScriptFileBypass {
 # =============================================================================
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-DesconfigLog 'Processo sem Administrador; iniciando elevacao.'
     Write-Host "Elevando privilegios (Administrador)..." -ForegroundColor Yellow
 
     # Se o script esta em disco ($PSCommandPath preenchido), reexecuta o arquivo.
@@ -66,13 +111,16 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     $argElev = "-NoProfile -ExecutionPolicy Bypass -File `"$caminhoScript`""
 
     try {
+        Write-DesconfigLog "Start-Process powershell.exe $argElev"
         Start-Process powershell.exe -Verb RunAs -ArgumentList $argElev
     }
     catch {
+        Write-DesconfigLog "Elevacao cancelada/falhou: $($_.Exception.Message)"
         Write-Host "Elevacao cancelada. Encerrando." -ForegroundColor Red
     }
     exit
 }
+Write-DesconfigLog 'Processo executando como Administrador.'
 
 
 # =============================================================================
@@ -912,6 +960,7 @@ function Desconfigurar-Maquina {
         Write-Host "`n  ✔ Desconfiguracao finalizada." -ForegroundColor Green
     }
     catch {
+        Write-DesconfigLog "ERRO ao desconfigurar: $($_ | Out-String)"
         Write-Host "`n  ERRO ao desconfigurar a maquina: $_" -ForegroundColor Red
     }
 }
@@ -1182,12 +1231,15 @@ while ($true) {
     Clear-Host
     Show-MenuPrincipal
     $opcao = (Read-Host).Trim()
+    Write-DesconfigLog "Opcao selecionada: $opcao"
 
     switch ($opcao) {
         "1" { Coletar-Evidencias }
         "2" { Desconfigurar-Maquina }
         "3" { Criar-UsuarioLocal }
         "4" {
+            Write-DesconfigLog 'Encerrando por opcao 4.'
+            try { Stop-Transcript | Out-Null } catch {}
             Write-Host "`n  Encerrando`n" -ForegroundColor Gray
             return
         }

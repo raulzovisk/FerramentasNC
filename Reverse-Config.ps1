@@ -50,9 +50,10 @@ if ($script:Edition.EditionId -notin @('Professional', 'ProfessionalN')) {
     exit 2
 }
 
-$script:BasePath = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+$script:BasePath = 'C:\logs\desconfig'
+New-Item -ItemType Directory -Force -Path $script:BasePath | Out-Null
 $script:ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { $null }
-$script:LogFile = Join-Path $script:BasePath 'debloat_execution.log'
+$script:LogFile = Join-Path $script:BasePath ("reverse_{0}_{1}.log" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
 
 function Write-Log {
     param(
